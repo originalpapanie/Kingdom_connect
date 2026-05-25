@@ -1,0 +1,141 @@
+version: '3.9'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: kingdom_postgres
+    environment:
+      POSTGRES_DB: ${DB_DATABASE:-kingdom_connect}
+      POSTGRES_USER: ${DB_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secret}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    networks:
+      - kingdom_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: kingdom_redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - kingdom_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Laravel Backend
+  laravel:
+    build:
+      context: ./docker
+      dockerfile: Dockerfile.laravel
+    container_name: kingdom_laravel
+    environment:
+      APP_NAME: ${APP_NAME:-KingdomConnect}
+      APP_ENV: ${APP_ENV:-local}
+      APP_KEY: ${APP_KEY:-base64:abcdefghijklmnopqrstuvwxyz1234567890}
+      APP_DEBUG: ${APP_DEBUG:-true}
+      APP_URL: ${APP_URL:-http://localhost:8000}
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: ${DB_DATABASE:-kingdom_connect}
+      DB_USERNAME: ${DB_USERNAME:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-secret}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    volumes:
+      - ./backend:/app
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - kingdom_network
+    command: php artisan serve --host=0.0.0.0 --port=8000
+
+  # Next.js Frontend
+  nextjs:
+    build:
+      context: ./docker
+      dockerfile: Dockerfile.nextjs
+    container_name: kingdom_nextjs
+    environment:
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000/api}
+      NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+      NEXT_PUBLIC_WS_URL: ${NEXT_PUBLIC_WS_URL:-ws://localhost:8080}
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    depends_on:
+      - laravel
+    networks:
+      - kingdom_network
+
+  # Laravel Reverb (WebSocket Server)
+  reverb:
+    build:
+      context: ./docker
+      dockerfile: Dockerfile.laravel
+    container_name: kingdom_reverb
+    environment:
+      APP_NAME: ${APP_NAME:-KingdomConnect}
+      APP_ENV: ${APP_ENV:-local}
+      APP_KEY: ${APP_KEY:-base64:abcdefghijklmnopqrstuvwxyz1234567890}
+      DB_CONNECTION: pgsql
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_DATABASE: ${DB_DATABASE:-kingdom_connect}
+      DB_USERNAME: ${DB_USERNAME:-postgres}
+      DB_PASSWORD: ${DB_PASSWORD:-secret}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    volumes:
+      - ./backend:/app
+    ports:
+      - "${REVERB_PORT:-8080}:8080"
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - kingdom_network
+    command: php artisan reverb:start --host=0.0.0.0 --port=8080
+
+  # phpMyAdmin (optional for database management)
+  adminer:
+    image: adminer:latest
+    container_name: kingdom_adminer
+    ports:
+      - "8081:8080"
+    depends_on:
+      - postgres
+    networks:
+      - kingdom_network
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  kingdom_network:
+    driver: bridge
